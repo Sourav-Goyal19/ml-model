@@ -2,15 +2,12 @@ import os
 import re
 import logging
 import subprocess
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from typing import Dict, Any, TypedDict, Annotated
 from pathlib import Path
+from dotenv import load_dotenv
+from typing import Dict, Any, TypedDict, Literal
+from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt.tool_node import ToolNode
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 load_dotenv()
 
@@ -27,68 +24,100 @@ class AgentState(TypedDict):
     steps: str
     script_content: str
     execution_result: str
+    observer_feedback: str
+    improvement_suggestions: str
+    error_fixes: str
     final_code: str
     last_error: str
     attempts: int
+    status: Literal["initial", "error", "success", "approved"]
 
 think_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-        You are a Machine Learning professor and Manim expert tasked with creating a beginner-friendly Manim video script for '{user_input}'. Use a ReAct-like process:
-        - Think: Reason about the key concepts, visuals (e.g., graphs, animations), and flow needed for clarity and engagement.
-        - Focus on educational value and a logical progression of ideas.
-        - Output ONLY a concise paragraph of your reasoning.
+        You are a Machine Learning professor and Manim expert tasked with creating a beginner-friendly Manim video script.
+        Analyze the educational concept: {user_input}
+        Consider: Key concepts to visualize, common student misconceptions, and effective teaching sequence.
+        Output ONLY a concise paragraph of your reasoning.
     """),
-    ("human", "Reason about this query: {user_input}")
+    ("human", "Concept to explain: {user_input}")
 ])
 
 plan_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-        Based on your reasoning, outline a detailed plan to create a Manim video script for '{user_input}' that's engaging and educational for beginners.
-        - Plan: Numbered, actionable steps covering explanation, visualization, and flow.
-        - Include specific Manim elements (e.g., Axes, Dots, animations).
-        - Output ONLY the steps, one per line.
+        Create a detailed plan for a Manim video explaining: {user_input}
+        Based on this analysis: {reasoning}
+        Include:
+        1. Key visualizations needed
+        2. Animation sequences
+        3. Explanation flow
+        4. Educational highlights
+        Output ONLY numbered steps.
     """),
-    ("human", "Plan based on this reasoning: {reasoning}")
+    ("human", "Create plan for: {user_input}")
 ])
 
 action_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-        You are a Manim expert creating a video script for '{user_input}' to teach beginners. Execute the steps provided with these guidelines:
-        - Use Text (not Tex) for labels/titles, ensuring clarity.
-        - Apply a consistent color scheme (blue for data, red for predictions/results).
-        - Include smooth animations (e.g., FadeIn, Create) and 0.5-second fade transitions.
-        - Define a single Scene class with all imports (e.g., `from manim import *`, `import random` if needed).
-        - Target a 1-2 minute video, keeping it concise and executable.
-        - Use random data if required, ensuring no undefined variables.
-        - Output ONLY the script in ``` marks, with minimal comments.
+        Generate/improve Manim script for: {user_input}
+        Follow these steps: {steps}
+        
+        Error Fixes Needed:
+        {error_fixes}
+        
+        Improvement Suggestions:
+        {improvement_suggestions}
+        
+        Requirements:
+        - Blue for data, red for results
+        - Smooth animations (FadeIn, Create, etc)
+        - 0.5s transitions
+        - Single Scene class
+        - 1-2 minute duration
+        - Handle all edge cases
+        Output ONLY the script in ``` marks.
     """),
-    ("human", "Execute these steps for '{user_input}':\n{steps}")
+    ("human", "Create/improve script for: {user_input}")
 ])
 
 observe_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-        You are a Manim expert reviewing the script for '{user_input}' based on its execution result. Your task is to:
-        - If 'Success', check clarity and engagement; output 'APPROVED' if good, or a revised script in ``` marks if improvements are needed.
-        - If an error or 'None', analyze the issue (e.g., syntax, missing imports), suggest fixes, and output a corrected script in ``` marks.
-        - Ensure the script uses Text, follows the color scheme (blue data, red results), includes transitions, and is beginner-friendly.
+        Analyze this Manim script execution:
+        Input: {user_input}
+        Execution Status: {status}
+        Error: {last_error}
+        
+        Your tasks:
+        1. If errors exist:
+           - Diagnose root cause
+           - Provide specific fixes (code snippets if possible)
+           - Focus on runtime/syntax issues
+     
+           - **Important Note** - Don't suggest anything even IMPROVEMENTS, except fixing the ERROR(S)
+        
+        2. Else If successful but improvable:
+           - Focus on educational clarity first, check on your own that what the created code is lacking according to the created plan:
+            -----------Script: {script_content}---------
+           - Don't messup any algorithm with other like linear regression with gradient descent.
+           - Is it fulfilling its main content properly
+           - Suggest specific improvements
+        
+        3. If perfect:
+           - Output "APPROVED"
+        
     """),
-    ("human", "Review this script:\n{script_content}\nExecution result: {execution_result}")
+    ("human", "Review this execution")
 ])
 
-
 def extract_code_block(text: str) -> str:
-    """Extracts code from triple-backtick formats."""
     pattern = r'```(?:python)?\s*\n(.*?)\n\s*```'
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else text.strip()
 
 def extract_scene_name(script: str) -> str:
-    """Extracts the class name of the Manim scene."""
     match = re.search(r'class\s+(\w+)\s*\(Scene\):', script)
     return match.group(1) if match else "DefaultScene"
 
 def run_manim_script(script_path: str, scene_name: str) -> tuple[bool, str]:
-    """Runs the Manim script in a Docker container with proper encoding."""
     command = [
         "docker", "run", "--rm",
         "-v", f"{os.path.dirname(script_path)}:/manim",
@@ -96,88 +125,141 @@ def run_manim_script(script_path: str, scene_name: str) -> tuple[bool, str]:
         os.path.basename(script_path), scene_name, "-ql", "--format=mp4",
         "--media_dir", "/manim/output"
     ]
-
     try:
+        logging.info(f"Executing Manim script: {' '.join(command)}")
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=300,
             encoding="utf-8", errors="replace"
         )
         if result.returncode == 0:
-            logging.info("Manim script executed successfully.")
+            logging.info("Manim execution succeeded")
             return True, "Success"
         else:
-            logging.error("Manim execution failed: %s", result.stderr)
+            logging.error(f"Manim execution failed with code {result.returncode}")
+            logging.error(f"Stderr: {result.stderr}")
             return False, result.stderr or "Unknown error"
     except subprocess.TimeoutExpired as e:
-        logging.error("Manim execution timed out: %s", e.stderr)
+        logging.error(f"Manim execution timed out: {str(e)}")
         return False, "Timeout expired"
     except Exception as e:
-        logging.error("Unexpected error in Manim execution: %s", str(e))
+        logging.error(f"Unexpected error in Manim execution: {str(e)}")
         return False, str(e)
 
 def think_node(state: AgentState) -> Dict[str, str]:
-    think_chain = think_prompt | llm
-    reasoning = think_chain.invoke({"user_input": state["user_input"]}).content.strip()
-    logging.info("Reasoning: %s", reasoning)
+    logging.info("Starting think_node")
+    chain = think_prompt | llm
+    reasoning = chain.invoke({"user_input": state["user_input"]}).content.strip()
+    logging.info(f"Generated reasoning: {reasoning}...")
     return {"reasoning": reasoning}
 
 def plan_node(state: AgentState) -> Dict[str, str]:
-    plan_chain = plan_prompt | llm
-    steps = plan_chain.invoke({
-        "reasoning": state["reasoning"],
-        "user_input": state["user_input"]
+    logging.info("Starting plan_node")
+    chain = plan_prompt | llm
+    steps = chain.invoke({
+        "user_input": state["user_input"],
+        "reasoning": state["reasoning"]
     }).content.strip()
-    logging.info("Planned Steps:\n%s", steps)
+    logging.info(f"Generated steps: {steps}...")
     return {"steps": steps}
 
 def action_node(state: AgentState) -> Dict[str, str]:
-    action_chain = action_prompt | llm
-    script = action_chain.invoke({
+    logging.info("Starting action_node")
+    logging.info(f"Using error fixes: {state.get('error_fixes', 'None')}")
+    logging.info(f"Using improvements: {state.get('improvement_suggestions', 'None')}")
+    
+    chain = action_prompt | llm
+    script = chain.invoke({
         "user_input": state["user_input"],
-        "steps": state["steps"]
+        "steps": state["steps"],
+        "error_fixes": state.get("error_fixes", "No fixes needed"),
+        "improvement_suggestions": state.get("improvement_suggestions", "No improvements suggested")
     }).content.strip()
     script_content = extract_code_block(script)
-    logging.info("Generated Script:\n%s", script_content)
+    logging.info(f"Generated script (length: {len(script_content)} chars)")
     return {"script_content": script_content}
 
 def execute_node(state: AgentState) -> Dict[str, str]:
+    logging.info("Starting execute_node")
     script_path = str(Path.cwd() / "mymanim.py")
     
-    with open(script_path, "w") as f:
+    logging.info(f"Writing script to {script_path}")
+    with open(script_path, "w", encoding="utf-8") as f:
         f.write(state["script_content"])
     
     scene_name = extract_scene_name(state["script_content"])
-    success, execution_result = run_manim_script(script_path, scene_name)
+    logging.info(f"Extracted scene name: {scene_name}")
+    
+    success, result = run_manim_script(script_path, scene_name)
     
     if success:
-        return {"execution_result": execution_result, "final_code": state["script_content"]}
+        logging.info("Execution completed successfully")
+        return {
+            "execution_result": result,
+            "last_error": "",
+            "status": "success"
+        }
     else:
-        return {"execution_result": execution_result, "last_error": execution_result}
+        logging.error(f"Execution failed: {result}")
+        return {
+            "execution_result": result,
+            "last_error": result,
+            "status": "error"
+        }
 
 def observe_node(state: AgentState) -> Dict[str, str]:
-    observe_chain = observe_prompt | llm
-    observation = observe_chain.invoke({
+    logging.info("Starting observe_node")
+    logging.info(f"Current status: {state['status']}")
+    
+    chain = observe_prompt | llm
+    analysis = chain.invoke({
         "user_input": state["user_input"],
-        "script_content": state["script_content"],
-        "execution_result": state["execution_result"]
+        "status": state["status"],
+        "last_error": state["last_error"],
+        "script_content": state["script_content"]
     }).content.strip()
     
-    logging.info("Observation: %s", observation[:200])
+    state["attempts"] += 1
+    logging.info(f"Observer analysis: {analysis}...")
     
-    if observation == "APPROVED":
-        return {"final_code": state["script_content"]}
-    elif observation.startswith("```"):
-        return {"script_content": extract_code_block(observation)}
-    else:
-        return {"last_error": state["execution_result"]}
+    error_fixes = "None"
+    improvements = "None"
+    
+    if "ERROR FIXES:" in analysis and "IMPROVEMENTS:" in analysis:
+        error_section = analysis.split("ERROR FIXES:")[1].split("IMPROVEMENTS:")[0].strip()
+        imp_section = analysis.split("IMPROVEMENTS:")[1].strip()
+        error_fixes = error_section if error_section != "None" else "No fixes needed"
+        improvements = imp_section if imp_section != "None" else "No improvements suggested"
+        
+        logging.info(f"Extracted error fixes: {error_fixes}...")
+        logging.info(f"Extracted improvements: {improvements}...")
+    elif analysis == "APPROVED":
+        logging.info("Observer approved the script")
+        return {
+            "final_code": state["script_content"],
+            "status": "approved"
+        }
+    
+    return {
+        "error_fixes": error_fixes,
+        "improvement_suggestions": improvements,
+        "observer_feedback": analysis
+    }
 
-def should_retry(state: AgentState) -> str:
-    if "final_code" in state and state["final_code"]:
+def should_continue(state: AgentState) -> str:
+    logging.info(f"Determining continuation. Status: {state.get('status')}, Attempts: {state.get('attempts', 0)}")
+    
+    if state.get("status") == "approved":
+        logging.info("Workflow approved - ending")
         return "end"
-    elif state.get("attempts", 0) >= 3:
+    if state.get("status") == "error":
+        logging.info("Errors detected - routing to fix_errors")
+        return "fix_errors"
+    if state.get("attempts", 0) >= 3:
+        logging.warning("Max attempts reached - ending")
         return "end"
-    else:
-        return "retry"
+    
+    logging.info("Routing to improve_quality")
+    return "improve_quality"
 
 workflow = StateGraph(AgentState)
 
@@ -187,6 +269,7 @@ workflow.add_node("action", action_node)
 workflow.add_node("execute", execute_node)
 workflow.add_node("observe", observe_node)
 
+workflow.set_entry_point("think")
 workflow.add_edge("think", "plan")
 workflow.add_edge("plan", "action")
 workflow.add_edge("action", "execute")
@@ -194,20 +277,18 @@ workflow.add_edge("execute", "observe")
 
 workflow.add_conditional_edges(
     "observe",
-    should_retry,
+    should_continue,
     {
         "end": END,
-        "retry": "action"
+        "fix_errors": "action",
+        "improve_quality": "action"
     }
 )
-
-workflow.set_entry_point("think")
 
 app = workflow.compile()
 
 def run_workflow(user_input: str) -> Dict[str, Any]:
-    """Run the LangGraph workflow."""
-    logging.info("Starting workflow for: %s", user_input)
+    logging.info(f"Starting workflow for input: {user_input}")
     
     initial_state = AgentState(
         user_input=user_input,
@@ -215,28 +296,51 @@ def run_workflow(user_input: str) -> Dict[str, Any]:
         steps="",
         script_content="",
         execution_result="",
+        observer_feedback="",
+        improvement_suggestions="",
+        error_fixes="",
         final_code="",
         last_error="",
-        attempts=0
+        attempts=0,
+        status="initial"
     )
     
     for step in app.stream(initial_state):
         for node, value in step.items():
-            logging.info(f"Node {node} completed")
+            logging.info(f"Completed node: {node}")
             if "attempts" in value:
-                value["attempts"] += 1
+                # value["attempts"] += 1
+                logging.info(f"Incremented attempt count to {value['attempts']}")
     
-    final_state = value 
+    final_state = value
+    logging.info(f"Workflow completed with status: {final_state.get('status', 'unknown')}")
+    
     return {
         "final_code": final_state.get("final_code", ""),
-        "last_error": final_state.get("last_error", "")
+        "status": final_state.get("status", "unknown"),
+        "attempts": final_state.get("attempts", 0),
+        "feedback": final_state.get("observer_feedback", "")
     }
 
 if __name__ == "__main__":
     try:
+        logging.info("Starting main execution")
         result = run_workflow("Explain linear regression")
-        print("Final Manim Script:\n", result["final_code"])
-        if result["last_error"]:
-            print("Last Error:\n", result["last_error"])
+        
+        print("\n=== Workflow Results ===")
+        print(f"Attempts: {result['attempts']}")
+        print(f"Final Status: {result['status']}")
+        
+        if result["final_code"]:
+            print("\nFinal Script:")
+            print(result["final_code"])
+        
+        if result["feedback"]:
+            print("\nFinal Feedback:")
+            print(result["feedback"])
+        
+        logging.info("Main execution completed successfully")
     except Exception as e:
-        logging.critical("An error occurred: %s", str(e))
+        logging.critical(f"Workflow failed: {str(e)}")
+        raise
+    
