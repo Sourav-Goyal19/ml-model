@@ -1,10 +1,9 @@
 import os
 import requests
 from langchain import hub
-from links2 import MANIM_MODULES
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 from pydantic import BaseModel
+from dotenv import load_dotenv
+from links2 import MANIM_MODULES
 from langchain.agents import tool
 from typing import List, Dict, Any
 from langgraph.graph import StateGraph, END
@@ -65,7 +64,7 @@ text_script_prompt = ChatPromptTemplate.from_messages([
         3. Use simple language suitable for students new to machine learning.
         4. Highlight key steps or concepts that can be visualized effectively.
         5. Avoid overly technical jargon unless simplified.
-        Return a single, cohesive paragraph that serves as the script for a video explanation.
+        
     """),
     ("human",
     """Generate an explanation script for the following query: {user_input}""")
@@ -75,13 +74,12 @@ scene_division_prompt = ChatPromptTemplate.from_messages([
     ("system",
     """
         You are an expert in breaking down educational scripts into visually distinct scenes for animation using Manim. Your role is to:
-        1. Analyze the provided script and identify logical segments that can be visualized as separate scenes.
-        2. Ensure each scene represents a clear, standalone visual state (e.g., showing data, animating a process).
+        1. Analyze the provided script and divide the script into 3 sections/scene.
+        2. Ensure each scene represents a clear, standalone visual state.
         3. Keep scenes concise and focused, suitable for animation.
         4. Return ONLY a list of scene titles, one per line, separated by "\\n".
         
         Example output for a script about linear regression:
-        Introduction to Linear Regression\nVisualizing the Data\nFitting the Line\nConclusion
     """),
     ("human",
     """Divide the following script into scenes: {text_script}""")
