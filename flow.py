@@ -9,9 +9,9 @@ from langchain.agents import tool
 from dotenv import load_dotenv
 from langchain import hub
 from langchain.agents import create_react_agent, AgentExecutor
-from links import MANIM_URLS
 from bs4 import BeautifulSoup
 import requests
+from links import MANIM_URLS
 
 load_dotenv()
 
