@@ -35,65 +35,100 @@ plan_prompt = ChatPromptTemplate.from_messages([
 
 action_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-        Generate a Manim script based on the structured plan for: {user_input}
+        You are an expert in generating **high-quality Manim scripts** for mathematical and data visualizations. 
         
-        Plan Steps:
-        {steps}
+        **Objective:**  
+        Generate a Manim script strictly based on the structured plan and user input. Follow all provided corrections and enhancements while ensuring smooth animations and clear explanations.
+
+        ---
         
-        Previous Errors and Fixes to Avoid:
+        **Input Details:**  
+        - **User Request:** {user_input}  
+        - **Planned Steps:**  
+          {steps}  
+        - **Improvements Requested:**  
+          {improvement_suggestions}  
+        - **Specific Fixes to Apply:**  
+          {error_fixes}  
+        
+        ---
+        
+        **Strict Requirements:**  
+        ✅ Use **Blue** for data representation and **Red** for results.  
+        ✅ Ensure smooth animations with **0.5s transitions** for a polished experience.  
+        ✅ Implement everything within **a single Scene class**.  
+        🚫 **Do NOT use static images** like "house.png" or "scatter_example.jpg".  
+        
+        ---
+        
+        **Critical Note:**  
+        ⚠️ **STRICTLY AVOID previous mistakes** mentioned below. Apply all specified fixes and ensure the script does NOT repeat those errors.  
+        
+        **Prevention Guide:**  
         {prevention_guide}
         
-        Improvements Requested:
-        {improvement_suggestions}
-        
-        Specific Fixes to Apply:
-        {error_fixes}
-        
-        **Requirements for the script:**
-        - Use Blue for data and Red for results
-        - Ensure smooth animations with 0.5s transitions
-        - Implement everything within a single Scene class
-        - Avoid using static images like "house.png" or "scatter_example.jpg"
-        
-        **Important:** Incorporate the specific fixes provided to resolve previous errors.
-        
-        Output ONLY the Manim script enclosed within triple backticks (```).
+        **Final Instruction:**  
+        - Output **only** the Manim script enclosed in triple backticks (```).  
+        - Do not add explanations, extra text, or comments outside of the script.  
     """),
     ("human", "Generate the Manim script for {user_input}")
 ])
 
 observe_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-        Analyze the execution of the Manim script.
+        You are an expert in **Manim script debugging and evaluation**. Your task is to analyze the execution results and provide precise feedback.
+
+        ---
         
-        Concept: {user_input}
-        Execution Status: {status}
-        Error (if any): {last_error}
-        Script Content:
-        ```{script_content}```
+        **Input Details:**  
+        - **Concept:** {user_input}  
+        - **Execution Status:** {status}  
+        - **Error (if any):** {last_error}  
+        - **Script Content:**  
+        ```  
+        {script_content}  
+        ```  
         
-        Your tasks:
-        1. If errors exist:
-           - Identify the root cause (e.g., "name 'random' is not defined")
-           - Provide fixes in the following format:
-             - ADD: <code to add, e.g., "import random">
-             - REPLACE: <old code> with <new code, e.g., "self.camera.frame" with "self.camera">
-             - REMOVE: <code to remove>
-           - Each fix on a new line
-           - **Do NOT suggest improvements here—only fix errors.**
+        ---
         
-        2. If execution is successful but improvement is needed:
-           - Compare the script with the original plan
-           - Identify missing or unclear parts
-           - Suggest improvements that enhance educational clarity
+        **Your Tasks:**  
         
-        3. If the script is correct and well-structured:
-           - Respond with **"APPROVED"**.
+        1️⃣ **If errors exist:**  
+           - **Identify the exact root cause** (e.g., `"name 'random' is not defined"`).  
+           - Provide precise fixes in the following structured format:  
+             - **ADD:** `<code to add>` (e.g., `"import random"`)  
+             - **REPLACE:** `<old code>` → `<new code>`  
+             - **REMOVE:** `<code to remove>`  
+           - Each fix should be on a **separate line**.  
+           - **Do NOT suggest improvements here—focus ONLY on error fixes.**  
+           
+        2️⃣ **If the script executes successfully but needs improvements:**  
+           - Compare the script with the original **plan** and **requirements**.  
+           - Identify **missing, unclear, or ineffective parts**.  
+           - Suggest **precise educational improvements** to enhance clarity and impact.  
+           
+        3️⃣ **If the script is correct and well-structured:**  
+           - Respond with **"APPROVED"** (without any additional comments).  
         
-        Format responses strictly as follows:
-        - If errors exist: "ERROR FIXES:\n<fix1>\n<fix2>\n..."
-        - If improvements are needed: "IMPROVEMENTS:\n<suggestion1>\n<suggestion2>\n..."
-        - If correct: "APPROVED"
+        ---
+        
+        **Strict Response Format:**  
+        - If errors exist:  
+          ```
+          ERROR FIXES:
+          ADD: <fix1>
+          REPLACE: <fix2>
+          REMOVE: <fix3>
+          ```  
+          
+        - If improvements are needed:  
+          ```
+          IMPROVEMENTS:
+          <suggestion1>
+          <suggestion2>
+          ```  
+          
+        - If correct: `"APPROVED"`  
     """),
     ("human", "Review the execution of the Manim script")
 ])

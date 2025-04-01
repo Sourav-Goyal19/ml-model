@@ -84,7 +84,6 @@ class ErrorMemory:
             SELECT error_summary, solution, occurrences 
             FROM error_knowledge 
             ORDER BY occurrences DESC
-            LIMIT 10
             """)
             return [
                 {"summary": row[0], "solution": row[1], "count": row[2]}

@@ -16,7 +16,7 @@ def run_manim_script(script_path: str, scene_name: str) -> tuple[bool, str]:
     command = [
         "docker", "run", "--rm",
         "-v", f"{Path(script_path).parent}:/manim",
-        "manimcommunity/manim:v0.18.0", "manim",
+        "manimcommunity/manim", "manim",
         Path(script_path).name, scene_name, "-ql", "--format=mp4",
         "--media_dir", "/manim/output"
     ]

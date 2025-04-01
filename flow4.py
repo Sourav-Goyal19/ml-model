@@ -8,6 +8,9 @@ from typing import Dict, Any, TypedDict, Literal
 from langchain_google_genai import ChatGoogleGenerativeAI
 from utils import extract_code_block, extract_scene_name, run_manim_script
 from prompts import think_prompt, plan_prompt, action_prompt, observe_prompt
+from langgraph.checkpoint.memory import MemorySaver
+
+memory = MemorySaver();
 
 load_dotenv()
 
@@ -62,7 +65,7 @@ def action_node(state: AgentState) -> Dict[str, str]:
         for e in error_memory.get_prevention_guide()
     )
 
-    print("**Prevention Guide: ", prevention_guide)
+    print("\n\n**Prevention Guide: ", prevention_guide)
     
     chain = action_prompt | llm
     script = chain.invoke({
@@ -209,7 +212,13 @@ workflow.add_conditional_edges(
     }
 )
 
-app = workflow.compile()
+config={
+    "configurable": {
+        "thread_id": 1
+    }
+}
+
+app = workflow.compile(checkpointer=memory)
 
 def run_workflow(user_input: str, thread_id: int = 1) -> Dict[str, Any]:
     logging.info(f"Starting workflow for input: {user_input}")
@@ -229,11 +238,7 @@ def run_workflow(user_input: str, thread_id: int = 1) -> Dict[str, Any]:
         status="initial"
     )
 
-    for step in app.stream(initial_state, config={
-        "configurable": {
-            "thread_id": thread_id
-        }
-    }):
+    for step in app.stream(initial_state, config=config):
         for node, value in step.items():
             logging.info(f"Completed node: {node}")
             if "attempts" in value:
@@ -267,6 +272,7 @@ if __name__ == "__main__":
             print(result["feedback"])
 
         logging.info("Main execution completed successfully")
+        print(app.get_state(config=config))
     except Exception as e:
         logging.critical(f"Workflow failed: {str(e)}")
         raise
