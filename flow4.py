@@ -9,8 +9,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from utils import extract_code_block, extract_scene_name, run_manim_script
 from prompts import think_prompt, plan_prompt, action_prompt, observe_prompt
 from langgraph.checkpoint.memory import MemorySaver
+from colorama import init, Fore, Style
 
-memory = MemorySaver();
+init(autoreset=True)
+
+memory = MemorySaver()
 
 load_dotenv()
 
@@ -41,14 +44,14 @@ class AgentState(TypedDict):
     status: Literal["initial", "error", "success", "approved"]
 
 def think_node(state: AgentState) -> Dict[str, str]:
-    logging.info("Starting think_node")
+    logging.info(Fore.GREEN + "Starting think_node")
     chain = think_prompt | llm
     reasoning = chain.invoke({"user_input": state["user_input"]}).content.strip()
     logging.info(f"Generated reasoning: {reasoning}...")
     return {"reasoning": reasoning}
 
 def plan_node(state: AgentState) -> Dict[str, str]:
-    logging.info("Starting plan_node")
+    logging.info(Fore.GREEN + "Starting plan_node")
     chain = plan_prompt | llm
     steps = chain.invoke({
         "user_input": state["user_input"],
@@ -58,15 +61,15 @@ def plan_node(state: AgentState) -> Dict[str, str]:
     return {"steps": steps}
 
 def action_node(state: AgentState) -> Dict[str, str]:
-    logging.info("Starting action_node")
-    
+    logging.info(Fore.GREEN + "Starting action_node")
+
     prevention_guide = "\n".join(
         f"• {e['summary']} (Fix: {e['solution']})"
         for e in error_memory.get_prevention_guide()
     )
 
     print("\n\n**Prevention Guide: ", prevention_guide)
-    
+
     chain = action_prompt | llm
     script = chain.invoke({
         "user_input": state["user_input"],
@@ -75,13 +78,13 @@ def action_node(state: AgentState) -> Dict[str, str]:
         "improvement_suggestions": state.get("improvement_suggestions", "No improvements suggested"),
         "prevention_guide": prevention_guide
     }).content.strip()
-    
+
     script_content = extract_code_block(script)
     logging.info(f"Generated script (length: {len(script_content)} chars)")
     return {"script_content": script_content}
 
 def execute_node(state: AgentState) -> Dict[str, str]:
-    logging.info("Starting execute_node")
+    logging.info(Fore.GREEN + "Starting execute_node")
     script_path = str(Path.cwd() / "mymanim.py")
 
     logging.info(f"Writing script to {script_path}")
@@ -94,14 +97,14 @@ def execute_node(state: AgentState) -> Dict[str, str]:
     success, result = run_manim_script(script_path, scene_name)
 
     if success:
-        logging.info("Execution completed successfully")
+        logging.info(Fore.GREEN + "Execution completed successfully")
         return {
             "execution_result": result,
             "last_error": "",
             "status": "success"
         }
     else:
-        logging.error(f"Execution failed: {result}")
+        logging.error(Fore.RED + f"Execution failed: {result}")
         return {
             "execution_result": result,
             "last_error": result,
@@ -116,26 +119,26 @@ def observe_node(state: AgentState) -> Dict[str, str]:
         try:
             error_context = state["last_error"].strip().split('\n')[-15:]
             core_error = next(
-                (line for line in reversed(error_context) 
+                (line for line in reversed(error_context)
                  if any(e in line for e in ["Error:", "Exception:", "Failed"])),
                 state["last_error"]
             )
-            
+
             error_summary = error_memory.record_error(
                 raw_error='\n'.join(error_context),
                 faulty_code=state["script_content"],
                 llm=llm
             )
             logging.info(f"Recorded error: {error_summary}")
-            
+
             prevention_guide = error_memory.get_prevention_guide()
             state["error_fixes"] = next(
-                (e["solution"] for e in prevention_guide 
+                (e["solution"] for e in prevention_guide
                  if core_error in e["summary"]),
                 "No specific fix found"
             )
         except Exception as e:
-            logging.error(f"Error recording failed: {str(e)}")
+            logging.error(Fore.RED + f"Error recording failed: {str(e)}")
             state["error_fixes"] = "REPLACE: (see Manim documentation)"
 
     chain = observe_prompt | llm
@@ -148,15 +151,15 @@ def observe_node(state: AgentState) -> Dict[str, str]:
 
     error_fixes = "No fixes needed"
     improvements = "No improvements suggested"
-    
+
     if "ERROR FIXES:" in analysis:
         error_fixes = analysis.split("ERROR FIXES:")[1].split("IMPROVEMENTS:")[0].strip()
         if not error_fixes.startswith(("ADD:", "REPLACE:")):
             error_fixes = state.get("error_fixes", "No valid fix generated")
-    
+
     if "IMPROVEMENTS:" in analysis:
         improvements = analysis.split("IMPROVEMENTS:")[1].strip()
-    
+
     if analysis == "APPROVED":
         return {
             "final_code": state["script_content"],
@@ -176,16 +179,16 @@ def should_continue(state: AgentState) -> str:
     logging.info(f"Determining continuation. Status: {state.get('status')}, Attempts: {state['attempts']}")
 
     if state.get("status") == "approved":
-        logging.info("Workflow approved - ending")
+        logging.info(Fore.GREEN + "Workflow approved - ending")
         return "end"
     if state.get("status") == "error":
-        logging.info("Errors detected - routing to fix_errors")
+        logging.info(Fore.RED + "Errors detected - routing to fix_errors")
         return "fix_errors"
     if state["attempts"] >= 3:
-        logging.warning("Max attempts reached - ending")
+        logging.warning(Fore.YELLOW + "Max attempts reached - ending")
         return "end"
 
-    logging.info("Routing to improve_quality")
+    logging.info(Fore.GREEN + "Routing to improve_quality")
     return "improve_quality"
 
 workflow = StateGraph(AgentState)
@@ -221,7 +224,7 @@ config={
 app = workflow.compile(checkpointer=memory)
 
 def run_workflow(user_input: str, thread_id: int = 1) -> Dict[str, Any]:
-    logging.info(f"Starting workflow for input: {user_input}")
+    logging.info(Fore.GREEN + f"Starting workflow for input: {user_input}")
 
     initial_state = AgentState(
         user_input=user_input,
@@ -240,12 +243,12 @@ def run_workflow(user_input: str, thread_id: int = 1) -> Dict[str, Any]:
 
     for step in app.stream(initial_state, config=config):
         for node, value in step.items():
-            logging.info(f"Completed node: {node}")
+            logging.info(Fore.GREEN + f"Completed node: {node}")
             if "attempts" in value:
                 logging.info(f"Incremented attempt count to {value['attempts']}")
 
     final_state = value
-    logging.info(f"Workflow completed with status: {final_state.get('status', 'unknown')}")
+    logging.info(Fore.GREEN + f"Workflow completed with status: {final_state.get('status', 'unknown')}")
 
     return {
         "final_code": final_state.get("final_code", ""),
@@ -256,7 +259,7 @@ def run_workflow(user_input: str, thread_id: int = 1) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     try:
-        logging.info("Starting main execution")
+        logging.info(Fore.GREEN + "Starting main execution")
         result = run_workflow("Explain linear regression")
 
         print("\n=== Workflow Results ===")
@@ -271,8 +274,8 @@ if __name__ == "__main__":
             print("\nFinal Feedback:")
             print(result["feedback"])
 
-        logging.info("Main execution completed successfully")
+        logging.info(Fore.GREEN + "Main execution completed successfully")
         print(app.get_state(config=config))
     except Exception as e:
-        logging.critical(f"Workflow failed: {str(e)}")
+        logging.critical(Fore.RED + f"Workflow failed: {str(e)}")
         raise

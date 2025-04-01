@@ -2,6 +2,9 @@ import re
 import logging
 import subprocess
 from pathlib import Path
+from colorama import init, Fore, Style
+
+init(autoreset=True)
 
 def extract_code_block(text: str) -> str:
     pattern = r'```(?:python)?\s*\n(.*?)\n\s*```'
@@ -21,21 +24,22 @@ def run_manim_script(script_path: str, scene_name: str) -> tuple[bool, str]:
         "--media_dir", "/manim/output"
     ]
     try:
-        logging.info(f"Executing Manim script: {' '.join(command)}")
+        logging.info(Fore.GREEN + f"Executing Manim script: {' '.join(command)}")
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=300,
             encoding="utf-8", errors="replace"
         )
         if result.returncode == 0:
-            logging.info("Manim execution succeeded")
+            logging.info(Fore.GREEN + "Manim execution succeeded")
             return True, "Success"
         else:
-            logging.error(f"Manim execution failed with code {result.returncode}")
-            logging.error(f"Stderr: {result.stderr}")
+            logging.error(Fore.RED + f"Manim execution failed with code {result.returncode}")
+            logging.error(Fore.RED + f"Stderr: {result.stderr}")
             return False, result.stderr or "Unknown error"
     except subprocess.TimeoutExpired as e:
-        logging.error(f"Manim execution timed out: {str(e)}")
+        logging.error(Fore.RED + f"Manim execution timed out: {str(e)}")
         return False, "Timeout expired"
     except Exception as e:
-        logging.error(f"Unexpected error in Manim execution: {str(e)}")
+        logging.error(Fore.RED + f"Unexpected error in Manim execution: {str(e)}")
         return False, str(e)
+    
