@@ -25,34 +25,39 @@ class ErrorMemory:
             raise
         
     def analyze_error(self, raw_error: str, faulty_code: str, llm) -> Dict[str, str]:
-        """Use AI to generate error summary and solution"""
-        try:
-            summary = llm.invoke(f"""
-            Extract JUST THE CORE MANIM ERROR in one sentence:
-            Error: {raw_error[:500]}
-            Code: {faulty_code[:500]}
-            
-            Respond ONLY with the technical problem summary.
-            Example: "Cannot animate NoneType objects"
-            """).content.strip()
+        error_lines = raw_error.strip().split('\n')
+        error_lines.reverse()
+        exact_error = next(
+            (line.strip() for line in error_lines 
+             if line.strip().startswith(('NameError', 'AttributeError', 'ValueError', 'TypeError'))),
+            raw_error[-500:]
+        )
+        relevant_code = faulty_code[-500:] if len(faulty_code) > 500 else faulty_code
+        solution_prompt = f"""
+        Fix this EXACT Manim error by providing ONLY the corrected code change:
+        Error: {exact_error}
+        Relevant Code:
+        {relevant_code}
 
-            solution = llm.invoke(f"""
-            For this Manim error, provide JUST THE CODE SOLUTION:
-            Error: {raw_error[:500]}
-            
-            Respond ONLY with the specific fix.
-            Example: "Initialize mobject before animating"
-            """).content.strip()
+        Respond with ONE of:
+        - "ADD: <Main Error>"
+        - "REPLACE: <old line> WITH <new line>"
 
-            return {"summary": summary, "solution": solution}
-        except Exception as e:
-            logging.error(f"Error analysis failed: {str(e)}")
-            return {"summary": "Unknown error", "solution": "Check Manim documentation"}
+        Example Fixes:
+        1. Error: "TypeError: getter() takes 1 positional argument but 2 were given"
+        Fix: "REPLACE: `obj.getter(x,y)` WITH `obj.getter(point=(x,y))`"
+
+        2. Error: "NameError: name 'np' is not defined"
+        Fix: "ADD: import numpy as np"
+        
+        3. Error: "AttributeError: 'Mobject' has no attribute 'animate'"
+        Fix: "REPLACE: `mobject.animate` WITH `mobject.shift`"
+        """
+        solution = llm.invoke(solution_prompt).content.strip()
+        return {"summary": exact_error, "solution": solution}
 
     def record_error(self, raw_error: str, faulty_code: str, llm) -> str:
-        """Store error and return summary"""
         analysis = self.analyze_error(raw_error, faulty_code, llm)
-        
         try:
             self.conn.execute("""
             INSERT OR REPLACE INTO error_knowledge 
@@ -63,7 +68,7 @@ class ErrorMemory:
             """, (
                 analysis["summary"],
                 analysis["solution"],
-                faulty_code[:200],
+                faulty_code[-200:],
                 analysis["summary"],
                 analysis["solution"]
             ))
@@ -74,13 +79,12 @@ class ErrorMemory:
             return analysis["summary"]
 
     def get_prevention_guide(self) -> List[Dict]:
-        """Get top error patterns for prevention"""
         try:
             cursor = self.conn.execute("""
             SELECT error_summary, solution, occurrences 
             FROM error_knowledge 
             ORDER BY occurrences DESC
-            LIMIT 5
+            LIMIT 10
             """)
             return [
                 {"summary": row[0], "solution": row[1], "count": row[2]}
@@ -89,7 +93,7 @@ class ErrorMemory:
         except sqlite3.Error as e:
             logging.error(f"Failed to get prevention guide: {str(e)}")
             return []
-
+    
     def close(self):
         try:
             self.conn.close()

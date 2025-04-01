@@ -61,6 +61,8 @@ def action_node(state: AgentState) -> Dict[str, str]:
         f"• {e['summary']} (Fix: {e['solution']})"
         for e in error_memory.get_prevention_guide()
     )
+
+    print("**Prevention Guide: ", prevention_guide)
     
     chain = action_prompt | llm
     script = chain.invoke({
@@ -104,50 +106,71 @@ def execute_node(state: AgentState) -> Dict[str, str]:
         }
 
 def observe_node(state: AgentState) -> Dict[str, str]:
-    logging.info("Starting observe_node")
-    logging.info(f"Current status: {state['status']}")
+    current_attempt = state.get("attempts", 0) + 1
+    logging.info(f"Attempt {current_attempt}. Status: {state['status']}")
 
     if state["status"] == "error":
         try:
+            error_context = state["last_error"].strip().split('\n')[-15:]
+            core_error = next(
+                (line for line in reversed(error_context) 
+                 if any(e in line for e in ["Error:", "Exception:", "Failed"])),
+                state["last_error"]
+            )
+            
             error_summary = error_memory.record_error(
-                raw_error=state["last_error"],
+                raw_error='\n'.join(error_context),
                 faulty_code=state["script_content"],
                 llm=llm
             )
-            logging.info(f"Recorded error pattern: {error_summary}")
+            logging.info(f"Recorded error: {error_summary}")
+            
+            prevention_guide = error_memory.get_prevention_guide()
+            state["error_fixes"] = next(
+                (e["solution"] for e in prevention_guide 
+                 if core_error in e["summary"]),
+                "No specific fix found"
+            )
         except Exception as e:
             logging.error(f"Error recording failed: {str(e)}")
+            state["error_fixes"] = "REPLACE: (see Manim documentation)"
 
     chain = observe_prompt | llm
     analysis = chain.invoke({
         "user_input": state["user_input"],
         "status": state["status"],
-        "last_error": state["last_error"],
+        "last_error": core_error if state["status"] == "error" else "",
         "script_content": state["script_content"]
     }).content.strip()
 
-    state["attempts"] += 1
-    logging.info(f"Observer analysis: {analysis[:200]}...")
-
-    error_fixes = "None"
-    improvements = "None"
-
-    if "ERROR FIXES:" in analysis and "IMPROVEMENTS:" in analysis:
-        error_section = analysis.split("ERROR FIXES:")[1].split("IMPROVEMENTS:")[0].strip()
-        imp_section = analysis.split("IMPROVEMENTS:")[1].strip()
-        error_fixes = error_section if error_section != "None" else "No fixes needed"
-        improvements = imp_section if imp_section != "None" else "No improvements suggested"
-    elif analysis == "APPROVED":
-        return {"final_code": state["script_content"], "status": "approved"}
+    error_fixes = "No fixes needed"
+    improvements = "No improvements suggested"
+    
+    if "ERROR FIXES:" in analysis:
+        error_fixes = analysis.split("ERROR FIXES:")[1].split("IMPROVEMENTS:")[0].strip()
+        if not error_fixes.startswith(("ADD:", "REPLACE:")):
+            error_fixes = state.get("error_fixes", "No valid fix generated")
+    
+    if "IMPROVEMENTS:" in analysis:
+        improvements = analysis.split("IMPROVEMENTS:")[1].strip()
+    
+    if analysis == "APPROVED":
+        return {
+            "final_code": state["script_content"],
+            "status": "approved",
+            "attempts": current_attempt
+        }
 
     return {
         "error_fixes": error_fixes,
         "improvement_suggestions": improvements,
-        "observer_feedback": analysis
+        "observer_feedback": analysis,
+        "attempts": current_attempt,
+        "last_error": core_error if state["status"] == "error" else ""
     }
 
 def should_continue(state: AgentState) -> str:
-    logging.info(f"Determining continuation. Status: {state.get('status')}, Attempts: {state.get('attempts', 0)}")
+    logging.info(f"Determining continuation. Status: {state.get('status')}, Attempts: {state['attempts']}")
 
     if state.get("status") == "approved":
         logging.info("Workflow approved - ending")
@@ -155,7 +178,7 @@ def should_continue(state: AgentState) -> str:
     if state.get("status") == "error":
         logging.info("Errors detected - routing to fix_errors")
         return "fix_errors"
-    if state.get("attempts", 0) >= 3:
+    if state["attempts"] >= 3:
         logging.warning("Max attempts reached - ending")
         return "end"
 
